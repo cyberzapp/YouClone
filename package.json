@@ -1,0 +1,30 @@
+{
+  "name": "youclone",
+  "version": "0.1.0",
+  "private": true,
+  "main": "desktop/main.cjs",
+  "scripts": {
+    "build": "tsc src/db/schema.ts --outDir desktop/db --module commonjs --target es2022 --skipLibCheck && next build --webpack",
+    "start": "electron .",
+    "rebuild": "electron-rebuild -f -w better-sqlite3",
+    "check": "tsc --noEmit"
+  },
+  "dependencies": {
+    "better-sqlite3": "^12.4.1",
+    "drizzle-orm": "^0.45.0",
+    "next": "^16.1.6",
+    "react": "^19.2.4",
+    "react-dom": "^19.2.4",
+    "wavesurfer.js": "^7.12.0"
+  },
+  "devDependencies": {
+    "@electron/rebuild": "^4.0.1",
+    "@tailwindcss/postcss": "^4.2.0",
+    "@types/node": "^22",
+    "@types/react": "^19",
+    "@types/react-dom": "^19",
+    "electron": "^40.8.0",
+    "tailwindcss": "^4.2.0",
+    "typescript": "^5.9.3"
+  }
+}

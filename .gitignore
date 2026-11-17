@@ -1,0 +1,17 @@
+.node-data/
+.pnpm-store/
+node_modules/
+.next/
+out/
+.venv/
+.voxm5/
+__pycache__/
+*.tsbuildinfo
+desktop/db/
+next-env.d.ts
+.DS_Store
+.env
+.env.*
+/*.wav
+/*.mp3
+/quality-comparison/
