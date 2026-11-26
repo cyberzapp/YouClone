@@ -572,7 +572,7 @@ class VoiceStudioStore:
                             s, t = int(m.group(1)), max(1, int(m.group(2)))
                             report("Stage 1/2 · Expressions", 24 + int(18 * s / t), msg.replace("[Orpheus-QLoRA] ", ""))
 
-                    orpheus_lora.train_orpheus_suman_lora(
+                    orpheus_lora.train_orpheus_voice_lora(
                         model=orpheus_model,
                         utterances=utterances,
                         adapter_dir=self.data_dir / "adapters",

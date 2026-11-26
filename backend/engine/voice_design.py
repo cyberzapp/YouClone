@@ -173,7 +173,7 @@ def generate_voice_design_candidates(
         ("Option 3 · Bold Character", 0.89, 0.93),
     ][: max(1, min(3, num_candidates))]
 
-    raw_outputs: list[tuple[str, np.ndarray, int, int]] = []
+    raw_outputs: list[tuple[str, np.ndarray, int, int, float, str]] = []
 
     if HAS_MLX and mx is not None and mlx_load_tts is not None:
         mx.set_default_device(mx.gpu)
@@ -208,22 +208,48 @@ def generate_voice_design_candidates(
                 mx.clear_cache()
                 if chunks:
                     wav = _trim_edges(np.concatenate(chunks), sr)
-                    raw_outputs.append((v_label, wav, sr, c_seed))
+                    raw_outputs.append((v_label, wav, sr, c_seed, float(pitch_semitones), texture))
         finally:
             del vd_model
             gc.collect()
             mx.synchronize()
             mx.clear_cache()
     else:
-        # Windows / Linux fallback: pair distinct expressive Orpheus actors + formant sculpting
+        # Windows / Linux CUDA path: pair distinct Orpheus actors + prompt-inferred formant/EQ sculpting
         p_low = clean_prompt.lower()
-        is_fem = any(w in p_low for w in ("female", "woman", "girl", "queen", "witch", "lady", "alto", "soprano", "she"))
-        is_high = any(w in p_low for w in ("mouse", "squeak", "tiny", "goblin", "high", "child", "kid", "cartoon"))
+        is_fem = any(w in p_low for w in ("female", "woman", "girl", "queen", "witch", "lady", "alto", "soprano", "she", "oracle"))
+        is_high = any(w in p_low for w in ("mouse", "squeak", "tiny", "goblin", "high", "child", "kid", "cartoon", "bright"))
+        is_deep = any(w in p_low for w in ("deep", "baritone", "bass", "titan", "giant", "monster", "trailer", "shadow", "villain"))
         actors = (
             ["leah", "tara", "mia"]
             if is_fem
             else (["zac", "leo", "jess"] if is_high else ["dan", "leo", "zac"])
         )
+
+        # Auto-infer pitch & vocal texture from free-form text prompt when sliders are left at defaults
+        auto_pitch = float(pitch_semitones)
+        if abs(auto_pitch) < 0.05:
+            if any(w in p_low for w in ("mouse", "squeak", "tiny")):
+                auto_pitch = 3.4
+            elif is_high:
+                auto_pitch = 2.0
+            elif any(w in p_low for w in ("titan", "giant", "monster", "colossal")):
+                auto_pitch = -3.8
+            elif is_deep:
+                auto_pitch = -1.4
+
+        auto_tex = texture
+        if auto_tex == "natural":
+            if is_high:
+                auto_tex = "cartoon"
+            elif any(w in p_low for w in ("raspy", "gravel", "pirate", "noir", "grizzled", "rough")):
+                auto_tex = "gritty"
+            elif any(w in p_low for w in ("ethereal", "oracle", "ghost", "haunt", "mystic")):
+                auto_tex = "ethereal"
+            elif is_deep:
+                auto_tex = "deep_creature"
+
+        spread = [-0.45, 0.0, 0.45]
         for idx, (v_label, temp, _top_p) in enumerate(variant_specs):
             c_seed = (int(seed) + idx * 137) % (2**31 - 1)
             wav_48k = engine.synthesize_studio_speech(
@@ -232,7 +258,8 @@ def generate_voice_design_candidates(
                 temperature=min(0.64, temp - 0.16),
                 seed=c_seed,
             )
-            raw_outputs.append((v_label, _trim_edges(wav_48k, 48000), 48000, c_seed))
+            cand_pitch = float(np.clip(auto_pitch + spread[idx % len(spread)], -6.0, 6.0))
+            raw_outputs.append((v_label, _trim_edges(wav_48k, 48000), 48000, c_seed, cand_pitch, auto_tex))
         engine.unload_all()
 
     if not raw_outputs:
@@ -241,12 +268,12 @@ def generate_voice_design_candidates(
     candidates: list[dict] = []
     with tempfile.TemporaryDirectory(dir=takes_dir.parent) as tmp:
         work_dir = Path(tmp)
-        for v_label, wav, sr, c_seed in raw_outputs:
+        for v_label, wav, sr, c_seed, eff_pitch, eff_tex in raw_outputs:
             sculpted, out_sr = _apply_character_sculpt(
                 wav,
                 sr,
-                pitch_semitones=pitch_semitones,
-                texture=texture,
+                pitch_semitones=eff_pitch,
+                texture=eff_tex,
                 work_dir=work_dir,
             )
             cid = str(uuid4())

@@ -286,7 +286,7 @@ def _compute_audio_ce_loss(
     return mx.mean(per_tok)
 
 
-def train_orpheus_suman_lora(
+def train_orpheus_voice_lora(
     model,
     utterances: list[dict],
     adapter_dir: Path,

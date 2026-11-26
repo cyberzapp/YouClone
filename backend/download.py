@@ -3,6 +3,7 @@ from concurrent.futures import ThreadPoolExecutor
 
 from huggingface_hub import hf_hub_download, snapshot_download
 
+from .engine.voice_design import VOICE_DESIGN_REPO
 from .models import CORE_MODELS, MODELS, ORPHEUS_GGUF_FILE, ORPHEUS_GGUF_REPO, WHISPER, WHISPER_FASTER
 
 try:
@@ -30,7 +31,7 @@ if __name__ == "__main__":
             selected_keys = list(CORE_MODELS)
 
         repos = [MODELS[key] for key in selected_keys]
-        targets = (*repos, WHISPER) if not args or "--all" in args else tuple(repos)
+        targets = (*repos, WHISPER, VOICE_DESIGN_REPO) if not args or "--all" in args else tuple(repos)
         with ThreadPoolExecutor(max_workers=2) as pool:
             list(pool.map(download, targets))
         for repo in repos:
