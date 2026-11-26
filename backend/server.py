@@ -23,6 +23,7 @@ from pydantic import BaseModel, Field, field_validator
 from .engine import dsp, lora
 from .engine.mlx_tts import Engine
 from .engine.transcriber import transcribe
+from .engine.voice_design import check_voice_design_cached, generate_voice_design_candidates
 from .engine.voice_studio import MIN_PROFESSIONAL_SECONDS, VoiceStudioStore
 from .models import MODEL_INFO, MODELS
 
@@ -256,7 +257,69 @@ async def list_studio_voices():
         "voices": voices,
         "training": pvc_state,
         "seedvc_ready": engine.seed_vc.is_available(),
+        "voice_design_cached": check_voice_design_cached(),
     }
+
+
+class VoiceDesignPreviewRequest(BaseModel):
+    prompt: str = Field(min_length=4, max_length=600)
+    sample_text: str = Field(
+        default="Listen closely... not everything hidden in the dark wants to be found.",
+        min_length=6,
+        max_length=450,
+    )
+    pitch_semitones: float = Field(default=0.0, ge=-6.0, le=6.0)
+    texture: Literal["natural", "cartoon", "deep_creature", "gritty", "ethereal"] = "natural"
+    seed: int = Field(default=108, ge=0, le=2**31 - 1)
+
+
+@app.post("/studio-voices/design/preview", dependencies=[Depends(authenticate)])
+async def preview_voice_design_endpoint(req: VoiceDesignPreviewRequest):
+    if pvc_state["running"]:
+        raise HTTPException(409, "Wait for Professional Voice Clone training to finish before designing voices.")
+    try:
+        async with inference_lock:
+            candidates = await asyncio.to_thread(
+                generate_voice_design_candidates,
+                engine,
+                prompt=req.prompt,
+                sample_text=req.sample_text,
+                pitch_semitones=req.pitch_semitones,
+                texture=req.texture,
+                seed=req.seed,
+                takes_dir=DATA / "takes",
+                num_candidates=3,
+            )
+        return {"candidates": candidates, "voice_design_cached": True}
+    except Exception as exc:
+        logger.exception("Voice design preview failed")
+        raise HTTPException(422, str(exc)) from exc
+
+
+class VoiceDesignSaveRequest(BaseModel):
+    name: str = Field(min_length=1, max_length=80)
+    category: str = Field(default="mysterious", max_length=40)
+    prompt: str = Field(min_length=4, max_length=600)
+    candidate_id: UUID
+    gender: str = Field(default="auto", max_length=20)
+
+
+@app.post("/studio-voices/design/save", dependencies=[Depends(authenticate)])
+async def save_voice_design_endpoint(req: VoiceDesignSaveRequest):
+    cand_path = DATA / "takes" / f"{req.candidate_id}.wav"
+    try:
+        entry = await asyncio.to_thread(
+            voice_store.create_designed_voice,
+            name=req.name,
+            category=req.category,
+            prompt=req.prompt,
+            candidate_wav=cand_path,
+            gender_hint=req.gender,
+        )
+        return {"voice": entry, "voices": voice_store.list_voices()}
+    except Exception as exc:
+        logger.exception("Saving designed voice failed")
+        raise HTTPException(422, str(exc)) from exc
 
 
 @app.post("/studio-voices/instant", dependencies=[Depends(authenticate)])

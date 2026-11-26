@@ -11,9 +11,10 @@ YouClone runs a **2-stage neural voice pipeline** completely on your own machine
 
 ## Features
 
-- **Two-Tier Voice Cloning**:
+- **Three-Mode Voice Creation Studio**:
   - **Instant Voice Clone (2–5 min audio, min 15s)**: Extracts a true median-F0 vocal reference in seconds — works on both Apple Silicon Macs and 4 GB+ NVIDIA GPUs.
   - **Professional Voice Clone / PVC (20+ min audio)**: Full 2-stage local fine-tuning (Orpheus-3B attention QLoRA + Seed-VC 44.1 kHz DiT) for studio-grade timbre, cadence, and articulation matching.
+  - **Voice Design (Prompt-to-Character, Zero Audio Required)**: Invent brand-new synthetic voices for mysterious villains, cartoon creatures, movie-trailer narrators, or fictional characters from a text prompt (`Qwen3-TTS-12Hz-1.7B-VoiceDesign-8bit` + vocal formant sculptor), audition **3 distinct variations**, and save any character permanently to your **Character Voices** library.
 - **Zero GPU Overlap Architecture**: Automatically unloads Stage 1 before running Whisper verification, and unloads Whisper before Stage 2 Seed-VC — keeping peak memory low and preventing GPU timeouts.
 - **Production Tools**: Speech-to-Speech Voice Changer (44.1 kHz), Sound Effects Synthesizer, Local Whisper Transcription & Timed Dubbing, A/B Voice Compare, Vocal Isolator, Directorial AI, Pronunciation Aliases, and Broadcast / Podcast / Cinematic mastering presets.
 - **Native Desktop App**: Clean Electron + Next.js desktop interface with waveform scrubbing, region A/B looping, take history, and one-click WAV / MP3 / FLAC / M4A + SRT subtitle export.

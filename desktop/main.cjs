@@ -89,6 +89,8 @@ const JSON_ROUTES = {
   "/api/tools/rate-fit": "tools/rate-fit",
   "/api/models/download": "models/download",
   "/api/lora/train": "lora/train",
+  "/api/studio-voices/design/preview": "studio-voices/design/preview",
+  "/api/studio-voices/design/save": "studio-voices/design/save",
 };
 
 const GET_ROUTES = {

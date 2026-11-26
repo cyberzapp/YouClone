@@ -6,10 +6,22 @@ export type SpaceMode = "none" | "room" | "hall" | "cathedral";
 export type DistanceMode = "near" | "medium" | "far";
 export type AmbienceMode = "none" | "vinyl" | "rain" | "tape" | "cafe";
 
+export type VoiceCategory = "mysterious" | "cartoon" | "male" | "female";
+
+export type VoiceDesignCandidate = {
+  id: string;
+  label: string;
+  seconds: number;
+  seed: number;
+  url: string;
+};
+
 export type StudioVoice = {
   id: string;
   name: string;
-  mode: "instant" | "professional";
+  mode: "instant" | "professional" | "designed";
+  category?: string;
+  design_prompt?: string;
   is_default?: boolean;
   orpheus_adapter?: string | null;
   orpheus_voice?: string;

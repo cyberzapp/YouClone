@@ -15,6 +15,7 @@ import {
   IconPlus,
   IconSliders,
   IconSoundwave,
+  IconWand,
   IconWaveform,
 } from "./icons";
 import { Timeline, type RegionRange } from "./timeline";
@@ -523,7 +524,7 @@ export default function Studio() {
           {menuOpen && (
             <div className="tools-popover" role="menu">
               <button className="btn-inline" disabled={!launch?.ready} onClick={() => { setMenuOpen(false); setVoiceModal(true); }}>
-                <IconWaveform size={15} /><span>Voice Creation (Instant &amp; Pro)</span>
+                <IconWand size={15} /><span>Voice Cloning &amp; Character Design</span>
               </button>
               <button className="btn-inline" disabled={!launch?.ready || busy} onClick={() => { setMenuOpen(false); setPanel("changer"); }}>
                 <IconMic size={15} /><span>Voice Changer (44.1 kHz)</span>
@@ -612,9 +613,23 @@ export default function Studio() {
 
           <div className="composer-footer">
             <div className="composer-pickers">
-              <label className="pill-select" title="Active Studio Voice">
-                <span className={activeStudioVoice?.mode === "professional" ? "picker-icon pro" : "picker-icon instant"}>
-                  {activeStudioVoice?.mode === "professional" ? <IconWaveform size={14} /> : <IconBolt size={14} />}
+              <label className="pill-select" title="Active Studio or Character Voice">
+                <span
+                  className={
+                    activeStudioVoice?.mode === "professional"
+                      ? "picker-icon pro"
+                      : activeStudioVoice?.mode === "designed"
+                        ? "picker-icon design"
+                        : "picker-icon instant"
+                  }
+                >
+                  {activeStudioVoice?.mode === "professional" ? (
+                    <IconWaveform size={14} />
+                  ) : activeStudioVoice?.mode === "designed" ? (
+                    <IconWand size={14} />
+                  ) : (
+                    <IconBolt size={14} />
+                  )}
                 </span>
                 <select
                   aria-label="Select voice"
@@ -624,7 +639,7 @@ export default function Studio() {
                 >
                   {studioVoices.map(v => (
                     <option key={v.id} value={v.id}>
-                      {v.name} · {v.mode === "professional" ? "PRO" : "INSTANT"}
+                      {v.name} · {v.mode === "professional" ? "PRO" : v.mode === "designed" ? "CHARACTER" : "INSTANT"}
                     </option>
                   ))}
                   {!studioVoices.length && <option value="">Studio Narrator · Leo</option>}

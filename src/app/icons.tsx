@@ -347,3 +347,30 @@ export function IconLayers(props: IconProps) {
     </Icon>
   );
 }
+
+export function IconWand(props: IconProps) {
+  return (
+    <Icon {...props}>
+      <path d="M3.5 16.5L13 7M11.2 5.2l3.6 3.6" />
+      <path d="M14.5 2.75v2.5M13.25 4h2.5M6.25 3.5v2M5.25 4.5h2M16 11.25v2M15 12.25h2" />
+    </Icon>
+  );
+}
+
+export function IconEye(props: IconProps) {
+  return (
+    <Icon {...props}>
+      <path d="M2.25 10s2.9-5.25 7.75-5.25S17.75 10 17.75 10s-2.9 5.25-7.75 5.25S2.25 10 2.25 10z" />
+      <circle cx="10" cy="10" r="2.35" />
+    </Icon>
+  );
+}
+
+export function IconUser(props: IconProps) {
+  return (
+    <Icon {...props}>
+      <circle cx="10" cy="6.75" r="3.25" />
+      <path d="M4.25 16.75a5.75 5.75 0 0 1 11.5 0" />
+    </Icon>
+  );
+}

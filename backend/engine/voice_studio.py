@@ -316,6 +316,85 @@ class VoiceStudioStore:
                 (self.data_dir / "adapters" / f"{adapter_id}{ext}").unlink(missing_ok=True)
         return True
 
+    def create_designed_voice(
+        self,
+        *,
+        name: str,
+        category: str,
+        prompt: str,
+        candidate_wav: Path,
+        gender_hint: str = "auto",
+    ) -> dict:
+        """Save a Voice-Design candidate WAV as a permanent, reusable Character Voice."""
+        if not candidate_wav.is_file():
+            raise ValueError("Selected voice preview expired or was not found. Generate candidates again.")
+
+        vid = f"char-{uuid4().hex[:10]}"
+        vdir = self.root / vid
+        vdir.mkdir(parents=True, exist_ok=True)
+        try:
+            tmp_44k = vdir / "_cand_44k.wav"
+            dur = _decode_to_44k_mono(candidate_wav, tmp_44k)
+            if dur < 1.5:
+                raise ValueError("Designed voice sample is too short. Use a slightly longer audition sentence.")
+            sig, _ = sf.read(str(tmp_44k), dtype="float32")
+            tmp_44k.unlink(missing_ok=True)
+
+            # Repeat with a short clean pause if < 8s so Seed-VC gets a rich 10-14s timbre anchor
+            if sig.size < int(8.0 * 44100):
+                gap = np.zeros((int(0.25 * 44100),), dtype=np.float32)
+                sig = np.concatenate([sig, gap, sig])[: int(14.0 * 44100)].astype(np.float32)
+
+            ref_wav, prev_wav, f0_hz = _extract_true_f0_reference(sig, 44100, target_sec=14.0)
+            ref_path = vdir / "ref.wav"
+            prev_path = vdir / "preview.wav"
+            sf.write(str(ref_path), ref_wav, 44100, subtype="PCM_16")
+            sf.write(str(prev_path), prev_wav, 44100, subtype="PCM_16")
+
+            # Infer gender hint from category or prompt when auto
+            eff_gender = gender_hint
+            if eff_gender == "auto":
+                p_low = f"{category} {prompt}".lower()
+                if any(w in p_low for w in ("female", "woman", "queen", "girl", "lady", "alto", "soprano")):
+                    eff_gender = "female"
+                elif any(w in p_low for w in ("male", "man", "baritone", "pirate", "wizard", "ceo", "detective")):
+                    eff_gender = "male"
+
+            actor = _pick_actor_for_voice(f0_hz, gender_hint=eff_gender)
+            clean_cat = (category or "character").strip().lower()
+            cat_title = clean_cat.replace("_", " ").title()
+            short_prompt = prompt.strip()
+            if len(short_prompt) > 110:
+                short_prompt = short_prompt[:107] + "…"
+
+            entry = {
+                "id": vid,
+                "name": name.strip(),
+                "mode": "designed",
+                "category": clean_cat,
+                "design_prompt": prompt.strip(),
+                "is_default": False,
+                "orpheus_adapter": None,
+                "orpheus_voice": actor,
+                "seedvc_checkpoint": None,
+                "seedvc_config": None,
+                "ref_audio": str(ref_path),
+                "preview_file": f"{vid}.wav",
+                "target_f0_hz": f0_hz,
+                "sample_minutes": round(dur / 60.0, 2),
+                "diffusion_steps": 32,
+                "cfg_rate": 0.76,
+                "created": int(time.time() * 1000),
+                "description": f"{cat_title} · {short_prompt}",
+            }
+            items = self._read_registry()
+            items.append(entry)
+            self._write_registry(items)
+            return entry
+        except Exception:
+            shutil.rmtree(vdir, ignore_errors=True)
+            raise
+
     def create_instant_voice(
         self,
         name: str,
