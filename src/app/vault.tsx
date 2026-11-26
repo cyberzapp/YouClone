@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useRef, useState } from "react";
+import { IconClose, IconMic, IconStop } from "./icons";
 import { describe, type Sample, type Voice } from "./types";
 
 const prompt = "The quick brown fox jumps over the lazy dog. I thought we’d take the early train, but the weather changed our plans. Can you hear the soft rain outside? Let’s make some tea and talk about what comes next.";
@@ -135,8 +136,8 @@ export function Vault({ sources, voices, ready, close, saved }: {
 
   const preview = file ? fileUrl : source ? `/media/sources/${encodeURIComponent(source)}` : "";
   return <dialog ref={dialog} onCancel={event => { event.preventDefault(); close(); }}>
-    <div className="modal-heading"><div><h2>Voice vault</h2><p>Prepare a recording and review its transcript.</p></div>
-      <button onClick={close} aria-label="Close voice vault">Close</button></div>
+    <div className="modal-heading"><div><h2>Voice Vault</h2><p>Prepare a recording and review its transcript.</p></div>
+      <button type="button" className="icon-btn" onClick={close} aria-label="Close voice vault"><IconClose size={15} /></button></div>
     <div className="modal-grid">
       <section>
         <label>Workspace recording<select disabled={busy || recording} value={source} onChange={event => select(event.target.value)}>
@@ -168,7 +169,9 @@ export function Vault({ sources, voices, ready, close, saved }: {
           <meter min={-60} max={0} low={-12} high={-6} optimum={-9} value={recording ? level : -60} /></label>
         <p className="hint">Aim for −12 to −6 dBFS.</p>
         <p className="script-prompt" lang="en">{prompt}</p>
-        <button disabled={busy} onClick={() => void record()}>{recording ? "Stop recording" : "Record sample"}</button>
+        <button className="btn-inline" disabled={busy} onClick={() => void record()}>
+          {recording ? <><IconStop size={13} /><span>Stop Recording</span></> : <><IconMic size={14} /><span>Record Sample</span></>}
+        </button>
       </section>
     </div>
     {prepared && <div className="prepared">

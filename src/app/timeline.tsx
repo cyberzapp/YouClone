@@ -3,14 +3,15 @@
 import { useEffect, useRef, useState } from "react";
 import WaveSurfer from "wavesurfer.js";
 import Regions, { type Region } from "wavesurfer.js/dist/plugins/regions.esm.js";
+import { IconDownload, IconPause, IconPlay, IconRepeat } from "./icons";
 import type { Format } from "./types";
 
 export type RegionRange = { start: number; end: number };
 const clock = (seconds: number) =>
   `${String(Math.floor(seconds / 60)).padStart(2, "0")}:${(seconds % 60).toFixed(2).padStart(5, "0")}`;
 
-export function Timeline({ audio, label, locked, canExportTake, canExportMaster, setPlayer, exportAudio }: {
-  audio: string; label: string; locked: boolean; canExportTake: boolean; canExportMaster: boolean; setPlayer: (player: (() => void) | null) => void;
+export function Timeline({ audio, label, locked, canExportTake, canExportMaster, autoPlay = false, setPlayer, exportAudio }: {
+  audio: string; label: string; locked: boolean; canExportTake: boolean; canExportMaster: boolean; autoPlay?: boolean; setPlayer: (player: (() => void) | null) => void;
   exportAudio: (format: Format, subtitles: boolean, master: boolean, region?: RegionRange) => void;
 }) {
   const surface = useRef<HTMLDivElement>(null);
@@ -39,7 +40,12 @@ export function Timeline({ audio, label, locked, canExportTake, canExportMaster,
     wave.current = player;
     plugin.current = regions;
     setPlayer(() => { void player.playPause().catch(e => setProblem(e.message)); });
-    player.on("ready", value => setDuration(value));
+    player.on("ready", value => {
+      setDuration(value);
+      if (autoPlay) {
+        void player.play().catch(() => {});
+      }
+    });
     player.on("timeupdate", setTime);
     player.on("play", () => setPlaying(true));
     player.on("pause", () => setPlaying(false));
@@ -63,7 +69,7 @@ export function Timeline({ audio, label, locked, canExportTake, canExportMaster,
       chosen.current = null;
       setPlayer(null);
     };
-  }, [audio, setPlayer]);
+  }, [audio, autoPlay, setPlayer]);
 
   useEffect(() => { wave.current?.setPlaybackRate(rate, pitchLock); }, [rate, pitchLock]);
 
@@ -73,28 +79,44 @@ export function Timeline({ audio, label, locked, canExportTake, canExportMaster,
     <div ref={surface} className="wave">{!audio && <span>Audio will appear here</span>}</div>
     {problem && <p role="alert">{problem}</p>}
     <div className="transport">
-      <button disabled={!duration} onClick={() => void wave.current?.playPause()}>{playing ? "Pause" : "Play"}</button>
+      <button className="btn-inline play-transport-btn" disabled={!duration} onClick={() => void wave.current?.playPause()}>
+        {playing ? <><IconPause size={13} /><span>Pause</span></> : <><IconPlay size={13} /><span>Play</span></>}
+      </button>
       <button disabled={!duration} onClick={() => {
         const start = Math.min(wave.current?.getCurrentTime() ?? 0, Math.max(0, duration - .25));
         const selection = plugin.current?.addRegion({ start, end: Math.min(duration, start + 3), color: "#91a0fa42" });
         if (selection) setRegion({ start: selection.start, end: selection.end });
-      }}>Set region</button>
-      <button disabled={!region} aria-pressed={loop} onClick={() => {
+      }}>Set Region</button>
+      <button className="btn-inline" disabled={!region} aria-pressed={loop} onClick={() => {
         looping.current = !loop; setLoop(!loop);
         if (!loop) chosen.current?.play();
-      }}>A/B loop</button>
+      }}>
+        <IconRepeat size={14} />
+        <span>A/B Loop</span>
+      </button>
       <button disabled={!region} onClick={() => { chosen.current?.remove(); chosen.current = null; setRegion(undefined); setLoop(false); looping.current = false; }}>Clear</button>
       <label>Playback <select value={rate} onChange={event => setRate(Number(event.target.value))}>
         {[.7, .85, 1, 1.15, 1.3].map(value => <option key={value} value={value}>{value}×</option>)}
       </select></label>
       <label><input type="checkbox" checked={pitchLock} onChange={event => setPitchLock(event.target.checked)} /> Preserve pitch</label>
       <div className="export-controls">
+        <button className="btn-inline" disabled={locked || !canExportTake} onClick={() => exportAudio("wav", false, false, region)}>
+          <IconDownload size={14} /><span>WAV</span>
+        </button>
+        <button className="btn-inline" disabled={locked || !canExportTake} onClick={() => exportAudio("mp3", false, false, region)}>
+          <IconDownload size={14} /><span>MP3</span>
+        </button>
         <select aria-label="Export format" value={format} onChange={event => setFormat(event.target.value as Format)}>
-          <option value="wav">WAV</option><option value="flac">FLAC</option><option value="mp3">MP3</option>
+          <option value="wav">WAV</option><option value="flac">FLAC</option><option value="mp3">MP3</option><option value="m4a">M4A</option>
         </select>
         <label><input type="checkbox" checked={subtitles} onChange={event => setSubtitles(event.target.checked)} /> SRT</label>
-        <button disabled={locked || !canExportTake} onClick={() => exportAudio(format, subtitles, false, region)}>{region ? "Export region" : label === "Master preview" ? "Export preview" : "Export take"}</button>
-        <button className="accent" disabled={locked || !canExportMaster} onClick={() => exportAudio(format, subtitles, true)}>Export master</button>
+        <button className="btn-inline" disabled={locked || !canExportTake} onClick={() => exportAudio(format, subtitles, false, region)}>
+          <IconDownload size={14} />
+          <span>{region ? "Export Region" : label === "Master preview" ? "Export Preview" : "Export"}</span>
+        </button>
+        {canExportMaster && label !== "Master preview" && (
+          <button disabled={locked || !canExportMaster} onClick={() => exportAudio(format, subtitles, true)}>Export Master</button>
+        )}
       </div>
     </div>
   </section>;

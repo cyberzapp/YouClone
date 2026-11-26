@@ -1,0 +1,11 @@
+# Windows / Linux (NVIDIA CUDA or CPU) Python 3.12 dependencies for YouClone Stage 1 & API server.
+# Installed automatically by `setup_windows.ps1` alongside PyTorch CUDA + llama-cpp-python CUDA.
+fastapi>=0.115.0
+uvicorn[standard]>=0.30.0
+python-multipart>=0.0.9
+numpy>=1.26.0
+scipy>=1.13.0
+soundfile>=0.12.1
+huggingface-hub>=0.26.0
+faster-whisper>=1.1.0
+snac>=1.2.1

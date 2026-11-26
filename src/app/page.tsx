@@ -1,9 +1,55 @@
 "use client";
 
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import {
+  IconBolt,
+  IconChevronDown,
+  IconChevronLeft,
+  IconChevronRight,
+  IconClose,
+  IconDocument,
+  IconFolderPlus,
+  IconHistory,
+  IconLab,
+  IconMic,
+  IconPlus,
+  IconSliders,
+  IconSoundwave,
+  IconWaveform,
+} from "./icons";
 import { Timeline, type RegionRange } from "./timeline";
 import { Vault } from "./vault";
-import { defaultSettings, describe, type Block, type Format, type Library, type Model, type Project, type Settings } from "./types";
+import { VoiceCreationModal } from "./voice_creation";
+import {
+  SoundEffectsStudio,
+  StudioToolsModal,
+  TakeHistory,
+  Transcription,
+  VoiceChanger,
+  type Caption,
+} from "./production";
+import { applyPronunciation } from "./pronunciation";
+import {
+  defaultSettings,
+  describe,
+  type AmbienceMode,
+  type Block,
+  type DistanceMode,
+  type EffectPreset,
+  type ExportSettings,
+  type FilterMode,
+  type Format,
+  type Library,
+  type LoraAdapter,
+  type Model,
+  type ModelStatusInfo,
+  type PauseFill,
+  type Project,
+  type PvcTrainingState,
+  type Settings,
+  type SpaceMode,
+  type StudioVoice,
+} from "./types";
 
 const initialLibrary: Library = { voices: [], samples: [], projects: [], blocks: [], takes: [], sources: [] };
 const designPresets = {
@@ -11,8 +57,50 @@ const designPresets = {
   Energetic: "Upbeat, bright delivery with varied intonation and crisp articulation.",
   Documentary: "Calm documentary narration with measured pacing and a grounded tone.",
   Whisper: "Quiet, breathy whispered delivery with clear articulation.",
+  "Cinematic Trailer": "Deep, resonant cinematic trailer narration with dramatic gravitas and crisp diction.",
+  "Audiobook Narrator": "Expressive literary audiobook narrator with warm midrange and natural storytelling cadence.",
 };
-const models: Record<Model, string> = { omni: "OmniVoice", zonos: "ZONOS3-Mini", qwen: "Qwen3 VoiceDesign" };
+const starterPrompts: Record<string, { text: string; style: string }> = {
+  "Viral Short Hook": {
+    text: "Wait... people are already playing GTA 6 on PC?!\n\nBro, the game's not even out on PC yet!\n\nSo how are they doing this?\n\nWell, turns out there's actually a way to play GTA 6 on your computer right now. But... there's one tiny problem.\n\nYeah, <sigh> sorry bro. Not happening. <chuckle> Unless you already own a console!",
+    style: "",
+  },
+  "Dramatic Story": {
+    text: "Listen carefully... every decision we make in the next five minutes determines how this story ends.",
+    style: "",
+  },
+  "Expressive Sigh": {
+    text: "You knew the whole time, didn't you? <sigh> And you still let me walk right into the trap.",
+    style: "",
+  },
+  "Comedic Punchline": {
+    text: "Imagine waiting all these years for GTA 6... <chuckle> only to end up playing GTA 6: Password Theft Edition!",
+    style: "",
+  },
+};
+const models: Record<Model, string> = {
+  orpheus_seedvc: "YouClone Studio (Orpheus-3B + Seed-VC 44kHz)",
+};
+
+type DefaultVoiceManifest = {
+  voice?: { id: string; name: string };
+  lora_adapter?: string;
+  english_sample_id?: string;
+  english_alt_sample_id?: string;
+  hindi_sample_id?: string;
+};
+
+function migrateBlockSettings(saved: Partial<Settings>): Settings {
+  const merged = { ...defaultSettings, ...saved };
+  if (saved.model && saved.model !== "orpheus_seedvc") {
+    merged.model = "orpheus_seedvc";
+    merged.temperature = defaultSettings.temperature;
+    merged.top_p = defaultSettings.top_p;
+    merged.repetition_penalty = defaultSettings.repetition_penalty;
+    if (saved.seed === 42) merged.seed = defaultSettings.seed;
+  }
+  return merged;
+}
 
 function makeBlock(projectId: string, text = ""): Block {
   return { id: crypto.randomUUID(), projectId, selected: null, settings: { ...defaultSettings, text } };
@@ -30,7 +118,16 @@ function synthesize(endpoint: string, settings: object, progress: (message: stri
         return;
       }
       const result = JSON.parse(data);
-      if (result.type === "progress") progress(`Generating chunk ${result.current} of ${result.total}…`);
+      if (result.type === "progress") {
+        if (result.emotion && String(result.emotion).startsWith("Stage ")) {
+          progress(`${result.emotion}…`);
+        } else {
+          const emo = result.emotion && result.emotion !== "warm_explain" && result.emotion !== "neutral"
+            ? ` · ${String(result.emotion).replace(/_/g, " ")}`
+            : "";
+          progress(`Beat ${result.current}/${result.total}${emo}…`);
+        }
+      }
       if (result.type === "done") { resolve(result); socket.close(); }
       if (result.type === "error") { reject(new Error(result.message)); socket.close(); }
     };
@@ -45,25 +142,46 @@ export default function Studio() {
   const [blocks, setBlocks] = useState<Block[]>([]);
   const [focused, setFocused] = useState("");
   const [launch, setLaunch] = useState<Awaited<ReturnType<Window["studio"]["service"]>>>();
+  const [panel, setPanel] = useState<"transcription" | "history" | "changer" | "sfx" | "tools" | "lora">();
+  const [showSettings, setShowSettings] = useState(false);
+  const [menuOpen, setMenuOpen] = useState(false);
+  const [adapters, setAdapters] = useState<LoraAdapter[]>([]);
+  const [modelsStatus, setModelsStatus] = useState<ModelStatusInfo[]>([]);
+  const [studioVoices, setStudioVoices] = useState<StudioVoice[]>([]);
+  const [pvcTraining, setPvcTraining] = useState<PvcTrainingState>();
+  const [voiceModal, setVoiceModal] = useState(false);
+  const [defaultVoice, setDefaultVoice] = useState<DefaultVoiceManifest>();
   const [vault, setVault] = useState(false);
   const [busy, setBusy] = useState(false);
+  const [progressLabel, setProgressLabel] = useState("");
   const [notice, setNotice] = useState("");
   const [error, setError] = useState("");
-  const [preview, setPreview] = useState<{ url: string; label: string; master?: { takes: string[]; pause: number } }>();
+  const [autoPlayNext, setAutoPlayNext] = useState(false);
+  const [preview, setPreview] = useState<{ url: string; label: string; master?: Pick<ExportSettings, "takes" | "pause" | "timing" | "effect_preset" | "pause_fill"> }>();
   const [audition, setAudition] = useState(false);
   const activeTask = useRef(false);
   const player = useRef<(() => void) | null>(null);
   const field = useRef<HTMLTextAreaElement | null>(null);
+  const menuRef = useRef<HTMLDivElement | null>(null);
   const setPlayer = useCallback((next: (() => void) | null) => { player.current = next; }, []);
+
+  useEffect(() => {
+    if (!menuOpen) return;
+    const onPointer = (e: MouseEvent) => {
+      if (menuRef.current && !menuRef.current.contains(e.target as Node)) setMenuOpen(false);
+    };
+    window.addEventListener("mousedown", onPointer);
+    return () => window.removeEventListener("mousedown", onPointer);
+  }, [menuOpen]);
 
   useEffect(() => {
     if (!window.studio) return;
     let alive = true;
     void window.studio.library().then(data => {
       if (!alive) return;
-      const current = data.projects.at(-1) ?? { id: crypto.randomUUID(), name: "Untitled project" };
+      const current = data.projects.at(-1) ?? { id: crypto.randomUUID(), name: "Voiceover Studio" };
       const rows = data.blocks.filter(block => block.projectId === current.id);
-      const loaded = rows.length ? rows : [makeBlock(current.id)];
+      const loaded = rows.length ? rows.map(r => ({ ...r, settings: migrateBlockSettings(r.settings) })) : [makeBlock(current.id)];
       setLibrary(data);
       setProject(current);
       setBlocks(loaded);
@@ -76,29 +194,108 @@ export default function Studio() {
     return () => { alive = false; clearInterval(interval); };
   }, []);
 
+  const refreshModelsStatus = useCallback(async () => {
+    try {
+      const [mRes, vRes] = await Promise.all([
+        fetch("/api/models/status"),
+        fetch("/api/studio-voices"),
+      ]);
+      if (mRes.ok) {
+        const data = await mRes.json();
+        if (Array.isArray(data.models)) setModelsStatus(data.models);
+        if (Array.isArray(data.adapters)) setAdapters(data.adapters);
+        if (data.default_voice) setDefaultVoice(data.default_voice);
+        if (Array.isArray(data.studio_voices)) setStudioVoices(data.studio_voices);
+        if (data.pvc_training) setPvcTraining(data.pvc_training);
+      }
+      if (vRes.ok) {
+        const vData = await vRes.json();
+        if (Array.isArray(vData.voices)) {
+          setStudioVoices(vData.voices);
+          const defVoice = vData.voices[0]?.id || "";
+          setBlocks(rows => rows.map(row =>
+            row.settings.studio_voice_id && vData.voices.some((v: StudioVoice) => v.id === row.settings.studio_voice_id)
+              ? row
+              : { ...row, settings: { ...row.settings, studio_voice_id: defVoice } }
+          ));
+        }
+        if (vData.training) setPvcTraining(vData.training);
+      }
+    } catch {}
+  }, []);
+
+  useEffect(() => {
+    if (launch?.ready) void refreshModelsStatus();
+  }, [launch?.ready, refreshModelsStatus]);
+
   useEffect(() => {
     if (project && !busy) void window.studio.project(project, blocks).catch(e => setError(describe(e)));
   }, [project, blocks, busy]);
 
-  const block = blocks.find(row => row.id === focused);
-  const takes = library.takes.filter(take => take.blockId === focused);
+  const block = blocks.find(row => row.id === focused) ?? blocks[0];
+  const takes = library.takes.filter(take => take.blockId === block?.id);
   const takeIndex = takes.findIndex(take => take.id === block?.selected);
   const selected = takes[takeIndex];
   const audio = preview?.url ?? (selected ? `/media/takes/${selected.id}.wav` : "");
 
-  function patch(settings: Partial<Settings>, id = focused) {
-    setBlocks(rows => rows.map(row => row.id === id ? { ...row, settings: { ...row.settings, ...settings } } : row));
+  const scriptMetrics = useMemo(() => {
+    const fullText = (block?.settings.text || "").trim();
+    const clean = fullText.replace(/\[[^\]]*\]|<[^>]*>/g, "").trim();
+    const words = clean ? clean.split(/\s+/).length : 0;
+    const chars = clean.length;
+    const estSeconds = Math.round(words / 2.6);
+    const mins = Math.floor(estSeconds / 60);
+    const secs = estSeconds % 60;
+    return { words, chars, clock: `${mins}:${String(secs).padStart(2, "0")}` };
+  }, [block?.settings.text]);
+
+  async function openProject(id?: string, captions?: Caption[]) {
+    if (!project) return;
+    await task(async () => {
+      await window.studio.project(project, blocks);
+      const fresh = await window.studio.library();
+      const next = id ? fresh.projects.find(item => item.id === id) :
+        { id: crypto.randomUUID(), name: captions ? "Timed narration" : "Untitled project" };
+      if (!next) throw new Error("Project could not be opened.");
+      const saved = fresh.blocks.filter(item => item.projectId === next.id).map(r => ({
+        ...r,
+        settings: migrateBlockSettings(r.settings),
+      }));
+      const nextBlocks = captions?.map(({ text, start, end }) => {
+        const row = makeBlock(next.id, text);
+        if (block) row.settings = { ...defaultSettings, ...block.settings, text };
+        row.settings.timing = { start, end };
+        return row;
+      }) ?? (saved.length ? saved : [{ ...makeBlock(next.id), settings: { ...defaultSettings, sample: block?.settings.sample ?? "" } }]);
+      await window.studio.project(next, nextBlocks);
+      setLibrary({ ...fresh, projects: id ? fresh.projects : [...fresh.projects, next] });
+      setProject(next);
+      setBlocks(nextBlocks);
+      focus(nextBlocks[0].id);
+    });
+  }
+
+  function appendScript(text: string) {
+    if (!project || !block) return;
+    const combined = block.settings.text.trim() ? `${block.settings.text.trim()}\n\n${text.trim()}` : text.trim();
+    patch({ text: combined });
+  }
+
+  function patch(settings: Partial<Settings>, id = block?.id ?? focused) {
+    setBlocks(rows => rows.map(row => row.id === id ? { ...row, settings: { ...defaultSettings, ...row.settings, ...settings } } : row));
   }
   function focus(id: string) {
     setFocused(id);
+    setAutoPlayNext(false);
     setPreview(undefined);
   }
-  function pickTake(id: string, selected: string) {
-    setBlocks(rows => rows.map(row => row.id === id ? { ...row, selected } : row));
+  function pickTake(id: string, selectedTakeId: string, autoPlay = false) {
+    setAutoPlayNext(autoPlay);
+    setBlocks(rows => rows.map(row => row.id === id ? { ...row, selected: selectedTakeId } : row));
     setPreview(undefined);
   }
   function cycle(delta: number) {
-    if (takes.length > 1) pickTake(focused, takes[(takeIndex + delta + takes.length) % takes.length].id);
+    if (takes.length > 1 && block) pickTake(block.id, takes[(takeIndex + delta + takes.length) % takes.length].id, false);
   }
   function tag(value: string) {
     if (!block || !field.current) return;
@@ -112,20 +309,44 @@ export default function Studio() {
     });
   }
 
+  async function attachExternalTake(takeId: string, seconds: number, text: string, settingsPatch: Partial<Settings>) {
+    if (!project || !block) return;
+    const updatedSettings: Settings = {
+      ...defaultSettings,
+      ...block.settings,
+      ...settingsPatch,
+      text: block.settings.text.trim() ? block.settings.text : text,
+    };
+    const newTake = {
+      id: takeId,
+      blockId: block.id,
+      seconds,
+      created: Date.now(),
+      settings: updatedSettings,
+    };
+    await window.studio.project(project, blocks);
+    await window.studio.take(newTake);
+    setAutoPlayNext(true);
+    setBlocks(rows => rows.map(r => r.id === block.id ? { ...r, selected: takeId, settings: updatedSettings } : r));
+    setLibrary(data => ({ ...data, takes: [...data.takes, newTake] }));
+    setPreview(undefined);
+    setNotice("Audio ready.");
+  }
+
   async function task(action: () => Promise<void>) {
     if (activeTask.current) return;
     activeTask.current = true;
-    setBusy(true); setError(""); setNotice("");
+    setBusy(true); setError(""); setNotice(""); setProgressLabel("");
     try { await action(); }
-    catch (e) { setError(describe(e)); setNotice(""); }
-    finally { activeTask.current = false; setBusy(false); }
+    catch (e) { setError(describe(e)); setNotice(""); setProgressLabel(""); }
+    finally { activeTask.current = false; setBusy(false); setProgressLabel(""); }
   }
 
-  async function generate(full: boolean) {
+  async function generate(full: boolean, missingOnly = false) {
     if (!project || !launch?.ready) return;
-    const target = full ? blocks.filter(row => row.settings.text.trim()) : block ? [block] : [];
+    const target = full ? blocks.filter(row => row.settings.text.trim() && (!missingOnly || !row.selected)) : block ? [block] : [];
     if (!target.length || !target[0].settings.text.trim()) {
-      setError("Enter text in the script editor."); return;
+      setError(missingOnly ? "Every block already has audio." : "Paste or type your script first."); return;
     }
     await task(async () => {
       let context: AudioContext | undefined;
@@ -151,22 +372,48 @@ export default function Studio() {
       try {
         await window.studio.project(project, blocks);
         for (const [index, row] of target.entries()) {
-          const sample = library.samples.find(value => value.id === row.settings.sample);
+          let rawText = row.settings.text;
+          let inlineVoiceSampleId = row.settings.sample || defaultVoice?.english_sample_id || library.samples[0]?.id || "";
+          let inlineStyle = row.settings.style;
+          const voiceMatch = rawText.match(/^\[voice:([^\]]+)\]\s*/i);
+          if (voiceMatch) {
+            const requestedName = voiceMatch[1].trim().toLowerCase();
+            const matchedVoice = library.voices.find(v => v.name.toLowerCase() === requestedName);
+            const matchedSample = matchedVoice ? library.samples.find(s => s.voiceId === matchedVoice.id) : undefined;
+            if (matchedSample) inlineVoiceSampleId = matchedSample.id;
+            rawText = rawText.slice(voiceMatch[0].length);
+          }
+          const emotionMatch = rawText.match(/^\[emotion:([^\]]*)\]\s*/i);
+          if (emotionMatch) {
+            inlineStyle = emotionMatch[1].trim();
+            rawText = rawText.slice(emotionMatch[0].length);
+          }
+
+          const sample = library.samples.find(value => value.id === inlineVoiceSampleId);
           const settings = {
-            ...row.settings, sample: sample?.id ?? null, transcript: sample?.transcript ?? "",
-            language: row.settings.language || (row.settings.model !== "qwen" ? sample?.language ?? "" : ""),
+            ...defaultSettings,
+            ...row.settings,
+            model: "orpheus_seedvc" as Model,
+            studio_voice_id: row.settings.studio_voice_id || studioVoices[0]?.id || "",
+            text: applyPronunciation(rawText, row.settings.pronunciation),
+            sample: sample?.id ?? (inlineVoiceSampleId || null),
+            transcript: sample?.transcript ?? "",
+            language: row.settings.language || "",
+            style: inlineStyle,
             embedding: sample?.embedding ?? null,
           };
-          setNotice(`Preparing block ${index + 1} of ${target.length}…`);
-          const output = await synthesize(launch.ws, settings, message => setNotice(
-            `Block ${index + 1} of ${target.length} · ${message}`,
-          ), play);
-          const take = { ...output, settings: row.settings, blockId: row.id, created: Date.now() };
+          setProgressLabel(target.length > 1 ? `Block ${index + 1}/${target.length}…` : "Generating…");
+          setNotice(target.length > 1 ? `Synthesizing block ${index + 1} of ${target.length}…` : "Synthesizing speech in your voice…");
+          const output = await synthesize(launch.ws, settings, message => {
+            setProgressLabel(message);
+            setNotice(target.length > 1 ? `Block ${index + 1}/${target.length} · ${message}` : message);
+          }, play);
+          const take = { ...output, settings: { ...defaultSettings, ...row.settings }, blockId: row.id, created: Date.now() };
           await window.studio.take(take);
           setLibrary(data => ({ ...data, takes: [...data.takes, take] }));
-          pickTake(row.id, take.id);
+          pickTake(row.id, take.id, index === target.length - 1);
         }
-        setNotice(full ? `Generated ${target.length} blocks.` : "Take saved.");
+        setNotice(target.length > 1 ? `Generated ${target.length} blocks.` : "Speech generated.");
       } finally {
         if (context) {
           const current = context;
@@ -179,21 +426,30 @@ export default function Studio() {
 
   async function exportAudio(format: Format, subtitles: boolean, master: boolean,
                              region?: RegionRange, quick = false, listen = false) {
-    const ids = master ? blocks.filter(row => row.settings.text.trim()).map(row => row.selected) : [selected?.id];
+    const spokenBlocks = blocks.filter(row => row.settings.text.trim());
+    const ids = master ? spokenBlocks.map(row => row.selected) : [selected?.id];
     if (!ids.length || ids.some(id => !id)) {
-      setError(master ? "Generate a take for each nonempty block before exporting the master." : "Select a take to export.");
+      setError(master ? "Generate audio for each block before exporting the master." : "Generate speech first to export.");
       return;
     }
     await task(async () => {
-      setNotice(listen ? "Building master preview…" : "Rendering export…");
-      const takes = ids as string[];
-      const pause = block?.settings.period_pause ?? .45;
+      setNotice(listen ? "Building master preview…" : `Saving ${format.toUpperCase()}…`);
+      const takesList = ids as string[];
+      const pause = block?.settings.period_pause ?? .36;
+      const effect_preset = block?.settings.effect_preset ?? "broadcast";
+      const pause_fill = block?.settings.pause_fill ?? "silence";
+      const ranges = master ? spokenBlocks.flatMap(row => row.settings.timing ? [row.settings.timing] : []) : [];
+      if (ranges.length && ranges.length !== spokenBlocks.length) {
+        throw new Error("Every block in a timed project needs a start and end time.");
+      }
+      const timing = ranges.length ? ranges : undefined;
       const result = await window.studio.export({
-        takes, format, subtitles, ...(master ? {} : region),
-        polish: master && !listen && blocks.some(row => row.settings.polish), pause,
+        takes: takesList, timing, format, subtitles, ...(master ? {} : region),
+        polish: master && !listen && blocks.some(row => row.settings.polish),
+        pause, effect_preset, pause_fill,
       }, quick, listen);
-      if (result.url) setPreview({ url: result.url, label: "Master preview", master: { takes, pause } });
-      setNotice(result.destination ? `Exported to ${result.destination}` : "");
+      if (result.url) setPreview({ url: result.url, label: "Master preview", master: { takes: takesList, pause, timing, effect_preset, pause_fill } });
+      setNotice(result.destination ? `Saved to ${result.destination}` : "");
     });
   }
 
@@ -201,15 +457,15 @@ export default function Studio() {
     function handle(event: KeyboardEvent) {
       if (event.defaultPrevented || event.repeat) return;
       const typing = (event.target as HTMLElement | null)?.closest("textarea,input,select,[contenteditable],button");
-      if (event.code === "Space" && !typing && !vault && player.current) {
+      if (event.code === "Space" && !typing && !vault && !panel && player.current) {
         event.preventDefault(); player.current(); return;
       }
       if (!event.metaKey) return;
       const key = event.key.toLowerCase();
       if (!["enter", "r", "[", "]", "e"].includes(key)) return;
       event.preventDefault();
-      if (busy || vault) return;
-      if (key === "enter") void generate(event.shiftKey);
+      if (busy || vault || panel) return;
+      if (key === "enter") void generate(blocks.length > 1 || event.shiftKey);
       if (key === "r") setVault(true);
       if (key === "[") cycle(-1);
       if (key === "]") cycle(1);
@@ -219,145 +475,451 @@ export default function Studio() {
     return () => window.removeEventListener("keydown", handle);
   });
 
-  const model = block?.settings.model;
-  return <main className="studio">
+  const model: Model = "orpheus_seedvc";
+  const activeStudioVoiceId = block?.settings.studio_voice_id || studioVoices[0]?.id || "";
+  const activeStudioVoice = studioVoices.find(v => v.id === activeStudioVoiceId) ?? studioVoices[0];
+  const projectTakesCount = library.takes.filter(t => blocks.some(b => b.id === t.blockId)).length;
+
+  return <main className="studio el-studio">
     <header className="topbar">
-      <div className="brand"><span className="brand-mark" aria-hidden="true">Y</span><div><strong>YouClone</strong><span>Voice production</span></div></div>
-      <span className={launch?.ready ? "status online" : "status"}><i />{launch?.ready ? "Local inference" : launch?.serviceError ? "Sidecar unavailable" : "Starting sidecar"}</span>
-      <button className="accent" disabled={!launch?.ready || busy} onClick={() => void generate(true)}>Generate script <kbd>⌘⇧↵</kbd></button>
+      <div className="brand">
+        <img className="brand-logo" src="/youclone-logo.png" alt="YouClone" width={36} height={36} />
+        <div>
+          <strong>YouClone</strong>
+          <span>Personal AI Voice Studio</span>
+        </div>
+      </div>
+      <span className={launch?.ready ? "status online" : "status"}>
+        <i />
+        {launch?.ready
+          ? (pvcTraining?.running
+            ? `Training PVC · ${pvcTraining.percent}%`
+            : activeStudioVoice
+              ? `Ready · ${activeStudioVoice.name}`
+              : "Ready · YouClone Studio (Orpheus-3B + Seed-VC 44kHz)")
+          : launch?.serviceError ? "Engine offline" : "Warming up YouClone Studio…"}
+      </span>
+      <div className="topbar-actions">
+        <button className="accent create-voice-btn btn-inline" disabled={!launch?.ready} onClick={() => setVoiceModal(true)}>
+          {pvcTraining?.running ? (
+            <><IconWaveform size={15} /><span>Training ({pvcTraining.percent}%)</span></>
+          ) : (
+            <><IconPlus size={15} /><span>Create Voice</span></>
+          )}
+        </button>
+        <button className="toolbar-btn btn-inline" disabled={busy || !project} onClick={() => setPanel("history")}>
+          <IconHistory size={15} />
+          <span>History{projectTakesCount ? ` (${projectTakesCount})` : ""}</span>
+        </button>
+        <button className="toolbar-btn btn-inline" aria-pressed={showSettings} onClick={() => setShowSettings(v => !v)}>
+          <IconSliders size={15} />
+          <span>Voice Settings</span>
+        </button>
+        <div className="tools-dropdown" ref={menuRef}>
+          <button className="toolbar-btn btn-inline" aria-expanded={menuOpen} onClick={() => setMenuOpen(v => !v)}>
+            <span>Tools</span>
+            <IconChevronDown size={14} className={menuOpen ? "chevron open" : "chevron"} />
+          </button>
+          {menuOpen && (
+            <div className="tools-popover" role="menu">
+              <button className="btn-inline" disabled={!launch?.ready} onClick={() => { setMenuOpen(false); setVoiceModal(true); }}>
+                <IconWaveform size={15} /><span>Voice Creation (Instant &amp; Pro)</span>
+              </button>
+              <button className="btn-inline" disabled={!launch?.ready || busy} onClick={() => { setMenuOpen(false); setPanel("changer"); }}>
+                <IconMic size={15} /><span>Voice Changer (44.1 kHz)</span>
+              </button>
+              <button className="btn-inline" disabled={!launch?.ready || busy} onClick={() => { setMenuOpen(false); setPanel("sfx"); }}>
+                <IconSoundwave size={15} /><span>Sound Effects</span>
+              </button>
+              <button className="btn-inline" disabled={!launch?.ready || busy} onClick={() => { setMenuOpen(false); setPanel("transcription"); }}>
+                <IconDocument size={15} /><span>Transcribe &amp; Timed Dub</span>
+              </button>
+              <button className="btn-inline" disabled={busy} onClick={() => { setMenuOpen(false); setPanel("tools"); }}>
+                <IconLab size={15} /><span>Voice Lab &amp; AI Director</span>
+              </button>
+              <div className="popover-divider" role="separator" />
+              <button className="btn-inline" disabled={!project || busy} onClick={() => { setMenuOpen(false); void openProject(); }}>
+                <IconFolderPlus size={15} /><span>New Project</span>
+              </button>
+            </div>
+          )}
+        </div>
+      </div>
     </header>
-    <div className="workbench">
-      <aside className="sidebar">
-        <div className="section-heading"><h2>Voice vault</h2><button disabled={busy} onClick={() => setVault(true)}>Add sample</button></div>
-        {library.voices.map(voice => <section className="voice-group" key={voice.id}>
-          <h3>{voice.name}</h3>
-          {library.samples.filter(sample => sample.voiceId === voice.id).map(sample =>
-            <button key={sample.id} className="source" disabled={busy || !block || model === "qwen"}
-              aria-pressed={block?.settings.sample === sample.id} onClick={() => {
-                patch({ sample: sample.id });
-                setPreview({ url: `/media/samples/${sample.id}.wav`, label: `${voice.name} · ${sample.style}` });
-              }}><strong>{sample.style}</strong><small>{sample.language.toUpperCase()} · {sample.seconds.toFixed(1)} s</small></button>)}
-        </section>)}
-        {!!library.sources.length && <section className="voice-group"><h3>Workspace recordings</h3>
-          {library.sources.map(source => <button key={source} className="source"
-            onClick={() => setPreview({ url: `/media/sources/${encodeURIComponent(source)}`, label: source })}>{source}</button>)}
-        </section>}
-        {!library.voices.length && <p className="hint">Add a reference clip to start cloning a voice.</p>}
-      </aside>
-      <section className="editor" aria-label="Script editor">
-        <div className="section-heading">
-          <input className="project-title" aria-label="Project name" value={project?.name ?? ""} disabled={busy || !project}
-            onChange={event => project && setProject({ ...project, name: event.target.value })} />
-          <button disabled={!project || busy} onClick={() => {
-            if (!project) return;
-            const row = makeBlock(project.id);
-            setBlocks([...blocks, row]); focus(row.id);
-          }}>Add block</button>
-        </div>
-        {blocks.map((row, index) => <article className="script-block" data-active={row.id === focused} key={row.id}>
-          <div className="block-heading"><button className="block-name" onClick={() => focus(row.id)}>Block {index + 1}</button>
-            <span>{models[row.settings.model]}</span>
-            <button disabled={busy || blocks.length < 2} aria-label={`Remove block ${index + 1}`} onClick={() => {
-              const next = blocks.filter(value => value.id !== row.id);
-              setBlocks(next);
-              if (focused === row.id) focus(next[Math.max(0, index - 1)].id);
-            }}>Remove</button>
+
+    <div className={showSettings ? "el-workbench with-drawer" : "el-workbench"}>
+      <section className="el-canvas" aria-label="Text to Speech Composer">
+        <div className="composer-card">
+          {blocks.length > 1 && (
+            <div className="block-tabs" role="tablist" aria-label="Timed script blocks">
+              {blocks.map((row, idx) => (
+                <button
+                  key={row.id}
+                  role="tab"
+                  aria-selected={row.id === block?.id}
+                  className={row.id === block?.id ? "tab-active" : ""}
+                  onClick={() => focus(row.id)}
+                >
+                  Block {idx + 1}{row.settings.timing ? ` (${row.settings.timing.start.toFixed(1)}s)` : ""}
+                </button>
+              ))}
+              <button
+                disabled={!project || busy}
+                onClick={() => {
+                  if (!project) return;
+                  const row = makeBlock(project.id);
+                  if (block) row.settings = { ...defaultSettings, ...block.settings, text: "", timing: undefined };
+                  setBlocks([...blocks, row]); focus(row.id);
+                }}
+              >+ Add</button>
+            </div>
+          )}
+
+          {block && (
+            <textarea
+              ref={field}
+              className="composer-textarea"
+              disabled={busy}
+              aria-label="Text to speech script"
+              placeholder="Paste or type your script here… English or Hindi, any length — just click Generate Speech."
+              value={block.settings.text}
+              onChange={event => patch({ text: event.target.value }, block.id)}
+            />
+          )}
+
+          <div className="composer-helpers">
+            {!block?.settings.text.trim() ? (
+              <div className="starter-bar" aria-label="Starter prompts">
+                <span className="hint">Try sample:</span>
+                {Object.entries(starterPrompts).map(([label, item]) => (
+                  <button key={label} type="button" disabled={busy || !block} onClick={() => patch({ text: item.text, style: item.style })}>
+                    {label}
+                  </button>
+                ))}
+              </div>
+            ) : (
+              <div className="starter-bar">
+                <button type="button" disabled={busy} onClick={() => tag("<sigh>")}>+ &lt;sigh&gt;</button>
+                <button type="button" disabled={busy} onClick={() => tag("<chuckle>")}>+ &lt;chuckle&gt;</button>
+                <button type="button" disabled={busy} onClick={() => tag("<laugh>")}>+ &lt;laugh&gt;</button>
+                <button type="button" disabled={busy} onClick={() => tag("<gasp>")}>+ &lt;gasp&gt;</button>
+                <button type="button" disabled={busy} onClick={() => tag("...")}>+ … pause</button>
+                <button type="button" disabled={busy} onClick={() => tag("[pause 0.5s]")}>+ [pause 0.5s]</button>
+                <button type="button" disabled={busy} onClick={() => patch({ text: "" })}>Clear text</button>
+              </div>
+            )}
           </div>
-          <textarea ref={row.id === focused ? field : undefined} disabled={busy} aria-label={`Block ${index + 1} script`}
-            placeholder="Type or paste your script…" value={row.settings.text} onFocus={() => { if (row.id !== focused) focus(row.id); }}
-            onChange={event => patch({ text: event.target.value }, row.id)}
-            onPaste={event => {
-              const parts = event.clipboardData.getData("text").split(/\r?\n\s*\r?\n/).map(text => text.trim()).filter(Boolean);
-              if (!project || row.settings.text || parts.length < 2) return;
-              event.preventDefault();
-              const inserted = parts.slice(1).map(text => makeBlock(project.id, text));
-              setBlocks([...blocks.slice(0, index), { ...row, settings: { ...row.settings, text: parts[0] } }, ...inserted, ...blocks.slice(index + 1)]);
-            }} />
-          {row.id === focused && <div className="block-tools">
-            {model === "omni" && <><button disabled={busy} onClick={() => tag("[sigh]")}>[sigh]</button>
-              <button disabled={busy} onClick={() => tag("[laughter]")}>[laughter]</button>
-              <button disabled={busy} onClick={() => tag("[surprise-ah]")}>[surprise-ah]</button>
-              <button disabled={busy} onClick={() => tag("[question-oh]")}>[question-oh]</button></>}
-            <button disabled={busy} onClick={() => tag("[pause 0.5s]")}>[pause 0.5s]</button>
-            <button className="accent regenerate" disabled={busy || !launch?.ready || !row.settings.text.trim()}
-              onClick={() => void generate(false)}>{row.selected ? "Regenerate block" : "Generate block"} <kbd>⌘↵</kbd></button>
-          </div>}
-        </article>)}
-        {(error || launch?.serviceError || launch?.modelWarning) && <p role="alert" className="error">{error || launch?.serviceError || launch?.modelWarning}</p>}
-        <p aria-live="polite" className="notice">{notice}</p>
-      </section>
-      <aside className="inspector">
-        <div className="section-heading"><h2>Block settings</h2></div>
-        {block && <fieldset disabled={busy}>
-          <label>Model<select value={model} onChange={event => patch({ model: event.target.value as Model, language: "", style: "" })}>
-            {Object.entries(models).map(([id, name]) => <option key={id} value={id}>{name}</option>)}
-          </select></label>
-          {model !== "qwen" && <label>Reference sample<select value={block.settings.sample} onChange={event => patch({ sample: event.target.value })}>
-            <option value="">Select a sample</option>
-            {library.voices.map(voice => <optgroup key={voice.id} label={voice.name}>
-              {library.samples.filter(sample => sample.voiceId === voice.id).map(sample =>
-                <option key={sample.id} value={sample.id}>{sample.style} · {sample.seconds.toFixed(1)} s</option>)}
-            </optgroup>)}
-          </select></label>}
-          {model === "omni" && <p className="hint">
-            Choose a clip of your voice with the delivery you want to hear.
-          </p>}
-          <label>Language<input value={block.settings.language} placeholder={model === "qwen" ? "Auto" : "Reference language"}
-              onChange={event => patch({ language: event.target.value })} /></label>
-          {model === "qwen" && <label>Delivery preset<select value="" onChange={event => {
-            const preset = event.target.value as keyof typeof designPresets;
-            if (preset) patch({ style: designPresets[preset] });
-          }}>
-            <option value="">Choose a preset</option>
-            {Object.keys(designPresets).map(preset => <option key={preset}>{preset}</option>)}
-          </select></label>}
-          {model !== "zonos" && <label>{model === "qwen" ? "Voice design prompt" : "Style instruction"}<textarea rows={2} value={block.settings.style}
-              onChange={event => patch({ style: event.target.value })} placeholder={model === "qwen" ? "Describe tone, pitch, and delivery" : "Optional model style"} /></label>}
-          <label>Speed <output>{block.settings.speed.toFixed(2)}×</output><input type="range" min=".7" max="1.3" step=".01"
-            value={block.settings.speed} onChange={event => patch({ speed: event.target.valueAsNumber })} /></label>
-          <label>Temperature <output>{block.settings.temperature.toFixed(2)}</output><input type="range" min="0" max="2" step=".05"
-            value={block.settings.temperature} onChange={event => patch({ temperature: event.target.valueAsNumber })} /></label>
-          <details><summary>Advanced</summary>
-            {model !== "qwen" && <label>Guidance<input type="number" min="0" max="8" step=".1" value={block.settings.guidance} onChange={event => patch({ guidance: event.target.valueAsNumber || 0 })} /></label>}
-            {model !== "omni" && <label>Top p<input type="number" min=".01" max="1" step=".01" value={block.settings.top_p} onChange={event => patch({ top_p: event.target.valueAsNumber || .95 })} /></label>}
-            {model !== "omni" && <label>Repetition penalty<input type="number" min="1" max="2" step=".01" value={block.settings.repetition_penalty} onChange={event => patch({ repetition_penalty: event.target.valueAsNumber || 1 })} /></label>}
-            <label>Seed<input type="number" min="0" max="4294967295" value={block.settings.seed} onChange={event => patch({ seed: event.target.valueAsNumber || 0 })} /></label>
-            <label>Comma pause (s)<input type="number" min="0" max="3" step=".05" value={block.settings.comma_pause} onChange={event => patch({ comma_pause: event.target.valueAsNumber || 0 })} /></label>
-            <label>Sentence pause (s)<input type="number" min="0" max="3" step=".05" value={block.settings.period_pause} onChange={event => patch({ period_pause: event.target.valueAsNumber || 0 })} /></label>
-          </details>
-          <label className="check"><input type="checkbox" checked={block.settings.polish} onChange={event => patch({ polish: event.target.checked })} /> Studio Polish</label>
-          <label className="check"><input type="checkbox" checked={audition} onChange={event => setAudition(event.target.checked)} /> Audition while generating</label>
-        </fieldset>}
-        <div className="takes">
-          <button disabled={busy || takes.length < 2} aria-label="Previous take" onClick={() => cycle(-1)}>‹</button>
-          <span>{selected ? `Take ${takeIndex + 1} / ${takes.length}` : "No takes"}</span>
-          <button disabled={busy || takes.length < 2} aria-label="Next take" onClick={() => cycle(1)}>›</button>
+
+          <div className="composer-footer">
+            <div className="composer-pickers">
+              <label className="pill-select" title="Active Studio Voice">
+                <span className={activeStudioVoice?.mode === "professional" ? "picker-icon pro" : "picker-icon instant"}>
+                  {activeStudioVoice?.mode === "professional" ? <IconWaveform size={14} /> : <IconBolt size={14} />}
+                </span>
+                <select
+                  aria-label="Select voice"
+                  disabled={busy || !block}
+                  value={activeStudioVoiceId}
+                  onChange={e => patch({ studio_voice_id: e.target.value })}
+                >
+                  {studioVoices.map(v => (
+                    <option key={v.id} value={v.id}>
+                      {v.name} · {v.mode === "professional" ? "PRO" : "INSTANT"}
+                    </option>
+                  ))}
+                  {!studioVoices.length && <option value="">Studio Narrator · Leo</option>}
+                </select>
+              </label>
+
+              <label className="pill-select" title="Speech Engine">
+                <select
+                  aria-label="Select model"
+                  disabled={busy || !block}
+                  value={model}
+                  onChange={e => patch({ model: e.target.value as Model })}
+                >
+                  {Object.entries(models).map(([id, name]) => {
+                    const info = modelsStatus.find(m => m.key === id);
+                    const suffix = info && !info.cached ? " (Download)" : "";
+                    return <option key={id} value={id}>{name}{suffix}</option>;
+                  })}
+                </select>
+              </label>
+            </div>
+
+            <span className="script-stats" aria-label="Script telemetry">
+              {scriptMetrics.words} words · {scriptMetrics.chars} chars · ~{scriptMetrics.clock}
+            </span>
+
+            <div className="composer-actions">
+              {takes.length > 1 && (
+                <div className="takes compact">
+                  <button className="icon-btn sm" disabled={busy} aria-label="Previous take" onClick={() => cycle(-1)}>
+                    <IconChevronLeft size={14} />
+                  </button>
+                  <span>Take {takeIndex + 1}/{takes.length}</span>
+                  <button className="icon-btn sm" disabled={busy} aria-label="Next take" onClick={() => cycle(1)}>
+                    <IconChevronRight size={14} />
+                  </button>
+                </div>
+              )}
+              <button
+                className="accent generate-btn"
+                disabled={busy || !launch?.ready || !block?.settings.text.trim()}
+                onClick={() => void generate(blocks.length > 1)}
+              >
+                {busy ? (
+                  progressLabel || "Generating…"
+                ) : (
+                  <>
+                    <span>{blocks.length > 1 ? `Generate All (${blocks.length})` : "Generate Speech"}</span>
+                    <kbd>⌘↵</kbd>
+                  </>
+                )}
+              </button>
+            </div>
+          </div>
         </div>
-        <button disabled={busy || !selected} onClick={() => setPreview(undefined)}>Show selected take</button>
-        <button className="master" disabled={busy || !launch?.ready || !blocks.some(row => row.selected)}
-          onClick={() => void exportAudio("wav", false, true, undefined, false, true)}>Preview master</button>
-      </aside>
+
+        {(error || launch?.serviceError || launch?.modelWarning) && (
+          <p role="alert" className="error">{error || launch?.serviceError || launch?.modelWarning}</p>
+        )}
+        {notice && <p aria-live="polite" className="notice">{notice}</p>}
+      </section>
+
+      {showSettings && block && (
+        <aside className="inspector drawer" aria-label="Voice Settings">
+          <div className="section-heading">
+            <h2>Voice Settings</h2>
+            <button className="icon-btn" onClick={() => setShowSettings(false)} aria-label="Close voice settings">
+              <IconClose size={15} />
+            </button>
+          </div>
+          <fieldset disabled={busy}>
+            <label>Project
+              <select className="project-picker" value={project?.id ?? ""} onChange={event => void openProject(event.target.value)}>
+                {project && <option value={project.id}>{project.name || "Untitled project"}</option>}
+                {library.projects.filter(item => item.id !== project?.id).map(item =>
+                  <option key={item.id} value={item.id}>{item.name || "Untitled project"}</option>)}
+              </select>
+            </label>
+            <label>Project title
+              <input value={project?.name ?? ""} onChange={event => project && setProject({ ...project, name: event.target.value })} />
+            </label>
+
+            <label>Speed <output>{block.settings.speed.toFixed(2)}×</output>
+              <input type="range" min=".7" max="1.3" step=".01" value={block.settings.speed}
+                onChange={event => patch({ speed: event.target.valueAsNumber })} />
+            </label>
+            <label>Stability <output>{Math.round(block.settings.stability ?? 50)}%</output>
+              <input type="range" min="0" max="100" step="1" value={block.settings.stability ?? 50}
+                onChange={event => patch({ stability: event.target.valueAsNumber })} />
+            </label>
+            <label>Similarity <output>{Math.round(block.settings.similarity_boost ?? 75)}%</output>
+              <input type="range" min="0" max="100" step="1" value={block.settings.similarity_boost ?? 75}
+                onChange={event => patch({ similarity_boost: event.target.valueAsNumber })} />
+            </label>
+            <label>Style exaggeration <output>{Math.round(block.settings.style_exaggeration ?? 0)}%</output>
+              <input type="range" min="0" max="100" step="1" value={block.settings.style_exaggeration ?? 0}
+                onChange={event => patch({ style_exaggeration: event.target.valueAsNumber })} />
+            </label>
+
+            <label>Language override
+              <input value={block.settings.language} placeholder="Auto (EN / HI)"
+                onChange={event => patch({ language: event.target.value })} />
+            </label>
+
+            <label>Style instruction
+              <textarea rows={2} value={block.settings.style}
+                onChange={event => patch({ style: event.target.value })}
+                placeholder="Optional delivery style (leave empty for pure voice clone)" />
+            </label>
+
+            <label>Mastering preset
+              <select value={block.settings.effect_preset ?? "broadcast"} onChange={event => patch({ effect_preset: event.target.value as EffectPreset })}>
+                <option value="broadcast">Broadcast — Leveler &amp; EQ</option>
+                <option value="podcast">Podcast — Gated &amp; Tight</option>
+                <option value="cinematic">Cinematic — Spacious</option>
+                <option value="warm">Warm — Low-Mid Boost</option>
+                <option value="bright">Bright — Airy Presence</option>
+                <option value="raw">Raw — Unprocessed</option>
+              </select>
+            </label>
+            <label>Pause fill
+              <select value={block.settings.pause_fill ?? "silence"} onChange={event => patch({ pause_fill: event.target.value as PauseFill })}>
+                <option value="silence">Digital silence (clean)</option>
+                <option value="room_tone">Room tone (natural)</option>
+              </select>
+            </label>
+
+            <details><summary>Audio Effects (Post-FX)</summary>
+              <label>Voice filter
+                <select value={block.settings.filter_mode ?? "none"} onChange={e => patch({ filter_mode: e.target.value as FilterMode })}>
+                  <option value="none">None</option>
+                  <option value="phone">Phone Line</option>
+                  <option value="radio">Vintage Radio</option>
+                  <option value="robot">Robot / Intercom</option>
+                  <option value="megaphone">Megaphone</option>
+                </select>
+              </label>
+              <label>Acoustic space
+                <select value={block.settings.space_mode ?? "none"} onChange={e => patch({ space_mode: e.target.value as SpaceMode })}>
+                  <option value="none">None (Dry Booth)</option>
+                  <option value="room">Small Room</option>
+                  <option value="hall">Concert Hall</option>
+                  <option value="cathedral">Cathedral / Cavern</option>
+                </select>
+              </label>
+              <label>Mic distance
+                <select value={block.settings.distance_mode ?? "near"} onChange={e => patch({ distance_mode: e.target.value as DistanceMode })}>
+                  <option value="near">Near (Close-Mic)</option>
+                  <option value="medium">Medium</option>
+                  <option value="far">Far (Room Perspective)</option>
+                </select>
+              </label>
+              <label>Ambient bed
+                <select value={block.settings.ambience_mode ?? "none"} onChange={e => patch({ ambience_mode: e.target.value as AmbienceMode })}>
+                  <option value="none">None</option>
+                  <option value="vinyl">Vinyl Crackle</option>
+                  <option value="rain">Soft Rain</option>
+                  <option value="tape">Analog Tape Hiss</option>
+                  <option value="cafe">Café Murmur</option>
+                </select>
+              </label>
+            </details>
+
+            <details><summary>Advanced</summary>
+              <label>Pronunciation aliases
+                <textarea rows={3} value={block.settings.pronunciation ?? ""}
+                  placeholder={"GTA = G T A\n1757 = सत्रह सौ सत्तावन"}
+                  onChange={event => patch({ pronunciation: event.target.value })} />
+              </label>
+              <label>Temperature <output>{block.settings.temperature.toFixed(2)}</output>
+                <input type="range" min="0" max="2" step=".05" value={block.settings.temperature}
+                  onChange={event => patch({ temperature: event.target.valueAsNumber })} />
+              </label>
+              <label>Seed<input type="number" min="0" max="4294967295" value={block.settings.seed}
+                onChange={event => patch({ seed: event.target.valueAsNumber || 0 })} /></label>
+              <label>Comma pause (s)<input type="number" min="0" max="3" step=".05" value={block.settings.comma_pause}
+                onChange={event => patch({ comma_pause: event.target.valueAsNumber || 0 })} /></label>
+              <label>Sentence pause (s)<input type="number" min="0" max="3" step=".05" value={block.settings.period_pause}
+                onChange={event => patch({ period_pause: event.target.valueAsNumber || 0 })} /></label>
+              <label className="check"><input type="checkbox" checked={block.settings.trim_silence ?? true}
+                onChange={event => patch({ trim_silence: event.target.checked })} /> Trim edge silence (−50 dBFS)</label>
+              <label className="check"><input type="checkbox" checked={block.settings.watermark ?? true}
+                onChange={event => patch({ watermark: event.target.checked })} /> AI provenance watermark</label>
+            </details>
+
+            <label className="check"><input type="checkbox" checked={block.settings.speaker_boost ?? true}
+              onChange={event => patch({ speaker_boost: event.target.checked })} /> Speaker Boost</label>
+            <label className="check"><input type="checkbox" checked={block.settings.polish}
+              onChange={event => patch({ polish: event.target.checked })} /> Studio Polish</label>
+            <label className="check"><input type="checkbox" checked={audition}
+              onChange={event => setAudition(event.target.checked)} /> Audition live chunks while generating</label>
+          </fieldset>
+        </aside>
+      )}
     </div>
-    <Timeline key={audio} audio={audio} label={preview?.label ?? (selected ? `Block ${blocks.findIndex(row => row.id === focused) + 1} · Take ${takeIndex + 1}` : "")}
-      locked={busy || !launch?.ready} canExportTake={preview ? !!preview.master : !!selected}
-      canExportMaster={blocks.some(row => !!row.settings.text.trim()) &&
+
+    <Timeline
+      key={audio}
+      audio={audio}
+      autoPlay={autoPlayNext}
+      label={preview?.label ?? (selected ? `${activeStudioVoice?.name ?? "Studio Voice"} · Take ${takeIndex + 1}` : "Generated speech will appear here")}
+      locked={busy || !launch?.ready}
+      canExportTake={preview ? !!preview.master : !!selected}
+      canExportMaster={blocks.length > 1 && blocks.some(row => !!row.settings.text.trim()) &&
         blocks.every(row => !row.settings.text.trim() || !!row.selected)}
-      setPlayer={setPlayer} exportAudio={(format, subtitles, master, region) => {
-          if (!master && preview?.master) {
-          const { takes, pause } = preview.master;
+      setPlayer={setPlayer}
+      exportAudio={(format, subtitles, master, region) => {
+        if (!master && preview?.master) {
+          const masterSettings = preview.master;
           void task(async () => {
-            const result = await window.studio.export({ takes, format, subtitles, ...region, pause }, false, false);
-            if (result.destination) setNotice(`Exported to ${result.destination}`);
+            const result = await window.studio.export({ ...masterSettings, format, subtitles, ...region }, false, false);
+            if (result.destination) setNotice(`Saved to ${result.destination}`);
           });
           return;
         }
         void exportAudio(format, subtitles, master, region);
-      }} />
+      }}
+    />
+
+    {panel === "transcription" && <Transcription close={() => setPanel(undefined)} sources={library.sources}
+      importText={text => { appendScript(text); setPanel(undefined); }}
+      importCaptions={captions => { setPanel(undefined); void openProject(undefined, captions); }} />}
+    {panel === "changer" && <VoiceChanger close={() => setPanel(undefined)} sources={library.sources}
+      voices={library.voices} samples={library.samples}
+      attachTake={attachExternalTake}
+      exportTake={async (takeId, format) => { await window.studio.export({ takes: [takeId], format }, false, false); }} />}
+    {panel === "sfx" && <SoundEffectsStudio close={() => setPanel(undefined)}
+      attachTake={attachExternalTake}
+      exportTake={async (takeId, format) => { await window.studio.export({ takes: [takeId], format }, false, false); }} />}
+    {(panel === "tools" || panel === "lora") && <StudioToolsModal
+      key={panel}
+      initialTab={panel === "lora" ? "lora" : "compare"}
+      close={() => setPanel(undefined)}
+      sources={library.sources} voices={library.voices} samples={library.samples}
+      adapters={adapters}
+      modelsStatus={modelsStatus}
+      wsEndpoint={launch?.ws} ready={!!launch?.ready}
+      activeText={block?.settings.text ?? ""}
+      applyDirectionToBlock={patchObj => patch(patchObj)}
+      applySpeedToBlock={speed => patch({ speed })}
+      attachTake={attachExternalTake}
+      onRefreshModels={refreshModelsStatus}
+      onLoraTrained={async adapter => {
+        const { voice, sample } = await window.studio.sample(adapter.name, {
+          id: adapter.sample_id,
+          style: "LoRA Fine-Tuned",
+          original: adapter.sources.join(", "),
+          transcript: adapter.sample_transcript,
+          language: adapter.sample_language,
+          seconds: adapter.sample_seconds,
+          embedding: null,
+        });
+        setLibrary(data => ({
+          ...data,
+          voices: data.voices.some(item => item.id === voice.id) ? data.voices : [...data.voices, voice],
+          samples: [...data.samples, sample],
+        }));
+        patch({
+          model: "orpheus_seedvc",
+          sample: sample.id,
+          lora_adapter: adapter.id,
+        });
+        setNotice(`Activated voice profile "${adapter.name}".`);
+      }}
+      onActivateLora={adapter => {
+        const matched = library.samples.find(s => s.id === adapter.sample_id);
+        patch({
+          model: "orpheus_seedvc",
+          ...(matched ? { sample: matched.id } : {}),
+          lora_adapter: adapter.id,
+        });
+        setNotice(`Activated voice profile "${adapter.name}".`);
+      }}
+    />}
+    {voiceModal && <VoiceCreationModal
+      voices={studioVoices}
+      activeVoiceId={activeStudioVoiceId}
+      training={pvcTraining}
+      ready={!!launch?.ready}
+      close={() => setVoiceModal(false)}
+      onSelectVoice={voice => {
+        patch({ studio_voice_id: voice.id });
+        setNotice(`Switched active voice to "${voice.name}".`);
+      }}
+      onRefresh={refreshModelsStatus}
+    />}
+    {panel === "history" && <TakeHistory close={() => setPanel(undefined)}
+      takes={library.takes.filter(take => blocks.some(row => row.id === take.blockId))}
+      select={take => { focus(take.blockId); pickTake(take.blockId, take.id, false); setPanel(undefined); }}
+      save={async (take, format) => { await window.studio.export({ takes: [take.id], format }, false, false); }} />}
     {vault && <Vault sources={library.sources} voices={library.voices} ready={!!launch?.ready} close={() => setVault(false)}
       saved={(voice, sample) => {
         setLibrary(data => ({ ...data, voices: data.voices.some(item => item.id === voice.id) ? data.voices : [...data.voices, voice],
           samples: [...data.samples, sample] }));
-        if (model !== "qwen") patch({ sample: sample.id });
+        patch({ sample: sample.id });
         setPreview({ url: `/media/samples/${sample.id}.wav`, label: `${voice.name} · ${sample.style}` });
         setVault(false);
       }} />}
